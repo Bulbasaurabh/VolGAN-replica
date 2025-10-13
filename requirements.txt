@@ -1,0 +1,11 @@
+torch 
+numpy
+pandas
+matplotlib
+polars
+yfinance
+pandas_datareader
+scikit-learn
+tqdm
+statsmodels
+scipy
