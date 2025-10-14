@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from scipy.interpolate import griddata
-
+print("im at step 1", pd.__version__)
 # === 1. Load your Parquet data (already done) ===
 options_df = pd.read_parquet("data/options_dataset.parquet")
 print("im at step 2")
@@ -22,8 +22,8 @@ options_df["moneyness"] = options_df["strike_price"] / options_df["spot"]
 options_df["tau"] = (options_df["exdate"] - options_df["date"]).dt.days / 365.0
 print("im at step 4")
 # === 4. Define fixed (m, τ) grid ===
-m_grid = np.linspace(0.8, 1.2, 5)     # 0.8 → 1.2
-tau_grid = np.linspace(0.05, 0.5, 6) # 0.05y (~18d) → 0.5y (~6mo)
+m_grid = np.linspace(0.8, 1.2, 10)     # 0.8 → 1.2
+tau_grid = np.linspace(0.05, 0.5, 8) # 0.05y (~18d) → 0.5y (~6mo)
 M, T = np.meshgrid(m_grid, tau_grid)
 grid_points = np.column_stack([M.ravel(), T.ravel()])
 print("im at step 5")
@@ -31,6 +31,7 @@ print("im at step 5")
 surfaces = []
 dates = []
 for date, group in options_df.groupby("date"):
+    print(date)
     pts = group[["moneyness", "tau"]].to_numpy()
     vols = group["impl_volatility"].to_numpy()
 
@@ -52,16 +53,8 @@ surf_df = pd.DataFrame(surfaces, index=dates)
 surf_df.index.name = "date"
 print("im at step 6")
 # === 6. Save to CSV (VolGAN expects CSV of flattened surfaces) ===
-output_dir = "../data"
+output_dir = "data"
 surf_df.to_csv(f"{output_dir}/surfacesTransform.csv", index=True)
 print(f"Saved surfacesTransform.csv with shape {surf_df.shape}")
 print("im at step 7")
-# === 7. Optionally, create a simple SPX.csv (for datapath) ===
-spx_df = pd.DataFrame({
-    "Date": dates,
-    "SPX": [spot_estimate.loc[d] for d in dates]
-})
-spx_df["log_return"] = np.log(spx_df["SPX"] / spx_df["SPX"].shift(1))
-spx_df.to_csv(f"{output_dir}/SPX.csv", index=False)
-print(f"Saved SPX.csv with shape {spx_df.shape}")
-print("im at step 8")
+
