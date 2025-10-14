@@ -211,3 +211,5 @@ __marimo__/
 *.csv
 *.parquet
 *.pyc
+notebooks/VolGAN
+notebooks/VolGAN
