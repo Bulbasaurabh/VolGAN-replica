@@ -79,11 +79,13 @@ def run_delta_hedge(options_df, position_option=1, contract_size=100, transactio
         std_error = np.sqrt(variance_error)
         rmshe = np.sqrt(np.nanmean(np.array(hedging_errors_clean)**2))
         
-        # CVaR
-        alpha = 0.05
-        threshold = np.nanpercentile(hedging_errors_clean, alpha * 100)
-        tail_errors = [e for e in hedging_errors_clean if e <= threshold]
-        cvar = np.nanmean(tail_errors) if len(tail_errors) > 0 else np.nan
+        # CVaR at multiple confidence levels
+        cvar_metrics = {}
+        for alpha in [0.01, 0.05, 0.10]:  # 1%, 5%, 10% tails
+            threshold = np.nanpercentile(hedging_errors_clean, alpha * 100)
+            tail_errors = [e for e in hedging_errors_clean if e <= threshold]
+            cvar_metrics[f'cvar_{int(alpha*100)}'] = np.nanmean(tail_errors) if len(tail_errors) > 0 else np.nan
+            cvar_metrics[f'tail_obs_{int(alpha*100)}'] = len(tail_errors)
         
         # P&L and costs
         total_costs = results_df['tx_cost'].sum()
@@ -99,8 +101,7 @@ def run_delta_hedge(options_df, position_option=1, contract_size=100, transactio
             'rmshe': rmshe,
             'min_error': np.nanmin(hedging_errors_clean),
             'max_error': np.nanmax(hedging_errors_clean),
-            'cvar': cvar,
-            'tail_obs': len(tail_errors),
+            **cvar_metrics,  # Unpack CVaR metrics
             'total_pnl': final_pnl,
             'total_costs': total_costs,
             'cost_ratio': final_pnl / total_costs if total_costs > 0 else np.nan
@@ -194,32 +195,8 @@ print(f"\nPreparing to test {len(selected_optionids)} options...")
 
 
 # -------------------------
-# 3. Run backtests for each option
+# 3. Heston Model Functions
 # -------------------------
-
-backtest_results = []
-
-for optionid in selected_optionids:
-    print(f"\n{'='*60}")
-    print(f"Testing optionid: {optionid}")
-    print('='*60)
-    
-    # Filter for this specific option
-    option_data = options_atm[options_atm['optionid'] == optionid].copy()
-    
-    # Skip if insufficient data
-    if len(option_data) < 20:
-        print(f"Skipping - insufficient data ({len(option_data)} rows)")
-        continue
-    
-    # Merge with SPX data
-    option_data = option_data.merge(spx_df, on='date', how='left')
-    option_data['date'] = pd.to_datetime(option_data['date'])
-    option_data = option_data.sort_values('date').reset_index(drop=True)
-    
-    # Fill missing impl_volatility
-    option_data['impl_volatility'] = option_data['impl_volatility'].fillna(method='ffill').fillna(method='bfill')
-    
 
 def heston_characteristic_function(phi, S0, v0, kappa, theta, sigma, rho, tau, r):
     """
@@ -322,50 +299,77 @@ def heston_delta(row, v0_initial=0.04, kappa=2.0, theta=0.04, sigma_vol=0.3, rho
     except:
         return np.nan
 
-# NEW: Heston delta
-print("Calculating Heston deltas (this may take longer)...")
-option_data['delta'] = option_data.apply(heston_delta, axis=1)
-option_data['mid_price'] = (option_data['best_bid'] + option_data['best_offer']) / 2
+# -------------------------
+# 4. Run backtests for each option
+# -------------------------
 
-# Get option details
-strike = option_data['strike_price'].iloc[0]
-expiry = option_data['exdate'].iloc[0]
-initial_spx_price = option_data['spx_close'].iloc[0]
-moneyness = initial_spx_price / strike
+backtest_results = []
 
-print(f"Strike: {strike}, Expiry: {expiry}")
-print(f"Initial SPX: {initial_spx_price:.2f}, Moneyness: {moneyness:.3f}")
-print(f"Total observations: {len(option_data)}")
-
-# DAILY hedging
-print("\nRunning DAILY hedging...")
-daily_metrics = run_delta_hedge(option_data)
-
-# WEEKLY hedging
-print("Running WEEKLY hedging...")
-option_data['day_of_week'] = option_data['date'].dt.dayofweek
-option_data_weekly = option_data[option_data['day_of_week'] == 0].reset_index(drop=True)
-
-if len(option_data_weekly) < 5:
-    print(f"Insufficient weekly data ({len(option_data_weekly)} rows), skipping weekly test")
-    weekly_metrics = None
-else:
-    weekly_metrics = run_delta_hedge(option_data_weekly)
-
-# Store results
-if daily_metrics or weekly_metrics:
-    backtest_results.append({
-        'optionid': optionid,
-        'strike': strike,
-        'expiry': expiry,
-        'moneyness': moneyness,
-        'total_days': len(option_data),
-        'daily': daily_metrics,
-        'weekly': weekly_metrics
-    })
+for optionid in selected_optionids:
+    print(f"\n{'='*60}")
+    print(f"Testing optionid: {optionid}")
+    print('='*60)
+    
+    # Filter for this specific option
+    option_data = options_atm[options_atm['optionid'] == optionid].copy()
+    
+    # Skip if insufficient data
+    if len(option_data) < 20:
+        print(f"Skipping - insufficient data ({len(option_data)} rows)")
+        continue
+    
+    # Merge with SPX data
+    option_data = option_data.merge(spx_df, on='date', how='left')
+    option_data['date'] = pd.to_datetime(option_data['date'])
+    option_data = option_data.sort_values('date').reset_index(drop=True)
+    
+    # Fill missing impl_volatility
+    option_data['impl_volatility'] = option_data['impl_volatility'].fillna(method='ffill').fillna(method='bfill')
+    
+    # NEW: Heston delta
+    print("Calculating Heston deltas (this may take longer)...")
+    option_data['delta'] = option_data.apply(heston_delta, axis=1)
+    option_data['mid_price'] = (option_data['best_bid'] + option_data['best_offer']) / 2
+    
+    # Get option details
+    strike = option_data['strike_price'].iloc[0]
+    expiry = option_data['exdate'].iloc[0]
+    initial_spx_price = option_data['spx_close'].iloc[0]
+    moneyness = initial_spx_price / strike
+    
+    print(f"Strike: {strike}, Expiry: {expiry}")
+    print(f"Initial SPX: {initial_spx_price:.2f}, Moneyness: {moneyness:.3f}")
+    print(f"Total observations: {len(option_data)}")
+    
+    # DAILY hedging
+    print("\nRunning DAILY hedging...")
+    daily_metrics = run_delta_hedge(option_data)
+    
+    # WEEKLY hedging
+    print("Running WEEKLY hedging...")
+    option_data['day_of_week'] = option_data['date'].dt.dayofweek
+    option_data_weekly = option_data[option_data['day_of_week'] == 0].reset_index(drop=True)
+    
+    if len(option_data_weekly) < 5:
+        print(f"Insufficient weekly data ({len(option_data_weekly)} rows), skipping weekly test")
+        weekly_metrics = None
+    else:
+        weekly_metrics = run_delta_hedge(option_data_weekly)
+    
+    # Store results
+    if daily_metrics or weekly_metrics:
+        backtest_results.append({
+            'optionid': optionid,
+            'strike': strike,
+            'expiry': expiry,
+            'moneyness': moneyness,
+            'total_days': len(option_data),
+            'daily': daily_metrics,
+            'weekly': weekly_metrics
+        })
 
 # -------------------------
-# 4. Aggregate and compare results
+# 5. Aggregate and compare results WITH CVaR ANALYSIS
 # -------------------------
 
 print("\n" + "="*80)
@@ -387,10 +391,16 @@ for result in backtest_results:
         'daily_pnl': daily['total_pnl'] if daily else np.nan,
         'daily_costs': daily['total_costs'] if daily else np.nan,
         'daily_rmshe': daily['rmshe'] if daily else np.nan,
+        'daily_cvar_1': daily['cvar_1'] if daily else np.nan,
+        'daily_cvar_5': daily['cvar_5'] if daily else np.nan,
+        'daily_cvar_10': daily['cvar_10'] if daily else np.nan,
         'weekly_obs': weekly['observations'] if weekly else np.nan,
         'weekly_pnl': weekly['total_pnl'] if weekly else np.nan,
         'weekly_costs': weekly['total_costs'] if weekly else np.nan,
         'weekly_rmshe': weekly['rmshe'] if weekly else np.nan,
+        'weekly_cvar_1': weekly['cvar_1'] if weekly else np.nan,
+        'weekly_cvar_5': weekly['cvar_5'] if weekly else np.nan,
+        'weekly_cvar_10': weekly['cvar_10'] if weekly else np.nan,
     }
     
     # Calculate improvements
@@ -399,6 +409,7 @@ for result in backtest_results:
         row['cost_savings_pct'] = (row['cost_savings'] / daily['total_costs']) * 100
         row['pnl_diff'] = weekly['total_pnl'] - daily['total_pnl']
         row['rmshe_diff'] = weekly['rmshe'] - daily['rmshe']
+        row['cvar_5_diff'] = weekly['cvar_5'] - daily['cvar_5']
     
     comparison_data.append(row)
 
@@ -417,20 +428,44 @@ print("\nDaily Hedging Averages:")
 print(f"  Mean P&L: ${comparison_df['daily_pnl'].mean():,.2f}")
 print(f"  Mean Costs: ${comparison_df['daily_costs'].mean():,.2f}")
 print(f"  Mean RMSHE: ${comparison_df['daily_rmshe'].mean():,.2f}")
+print(f"  Mean CVaR (1%): ${comparison_df['daily_cvar_1'].mean():,.2f}")
+print(f"  Mean CVaR (5%): ${comparison_df['daily_cvar_5'].mean():,.2f}")
+print(f"  Mean CVaR (10%): ${comparison_df['daily_cvar_10'].mean():,.2f}")
 
 print("\nWeekly Hedging Averages:")
 print(f"  Mean P&L: ${comparison_df['weekly_pnl'].mean():,.2f}")
 print(f"  Mean Costs: ${comparison_df['weekly_costs'].mean():,.2f}")
 print(f"  Mean RMSHE: ${comparison_df['weekly_rmshe'].mean():,.2f}")
+print(f"  Mean CVaR (1%): ${comparison_df['weekly_cvar_1'].mean():,.2f}")
+print(f"  Mean CVaR (5%): ${comparison_df['weekly_cvar_5'].mean():,.2f}")
+print(f"  Mean CVaR (10%): ${comparison_df['weekly_cvar_10'].mean():,.2f}")
 
 print("\nCost Savings (Daily → Weekly):")
 print(f"  Mean Cost Savings: ${comparison_df['cost_savings'].mean():,.2f}")
 print(f"  Mean Cost Savings %: {comparison_df['cost_savings_pct'].mean():.1f}%")
 print(f"  Mean P&L Difference: ${comparison_df['pnl_diff'].mean():,.2f}")
 print(f"  Mean RMSHE Increase: ${comparison_df['rmshe_diff'].mean():,.2f}")
+print(f"  Mean CVaR (5%) Difference: ${comparison_df['cvar_5_diff'].mean():,.2f}")
+
+print("\n" + "="*80)
+print("CVaR RISK ANALYSIS")
+print("="*80)
+
+print("\nTail Risk Comparison (CVaR at 5% level):")
+print(f"  Daily average worst 5% loss: ${comparison_df['daily_cvar_5'].mean():,.2f}")
+print(f"  Weekly average worst 5% loss: ${comparison_df['weekly_cvar_5'].mean():,.2f}")
+cvar_improvement = comparison_df['daily_cvar_5'].mean() - comparison_df['weekly_cvar_5'].mean()
+print(f"  CVaR improvement (daily is better if positive): ${cvar_improvement:,.2f}")
+
+if cvar_improvement > 0:
+    print(f"  → Daily hedging has BETTER tail risk protection")
+else:
+    print(f"  → Weekly hedging has BETTER tail risk protection")
 
 # Statistical test: Is weekly consistently better/worse?
 pnl_improvements = comparison_df['pnl_diff'].dropna()
+cvar_improvements = comparison_df['cvar_5_diff'].dropna()
+
 if len(pnl_improvements) > 2:
     t_stat, p_value = stats.ttest_1samp(pnl_improvements, 0)
     print(f"\nStatistical test (P&L difference):")
@@ -441,6 +476,17 @@ if len(pnl_improvements) > 2:
         print(f"  Result: Weekly hedging is statistically significantly {direction}")
     else:
         print(f"  Result: No significant difference between daily and weekly")
+
+if len(cvar_improvements) > 2:
+    t_stat_cvar, p_value_cvar = stats.ttest_1samp(cvar_improvements, 0)
+    print(f"\nStatistical test (CVaR 5% difference):")
+    print(f"  t-statistic: {t_stat_cvar:.3f}")
+    print(f"  p-value: {p_value_cvar:.3f}")
+    if p_value_cvar < 0.05:
+        direction = "higher tail risk" if cvar_improvements.mean() < 0 else "lower tail risk"
+        print(f"  Result: Weekly hedging has statistically significantly {direction}")
+    else:
+        print(f"  Result: No significant difference in tail risk")
 
 # Save results
 comparison_df.to_csv('heston_hedging_backtest_results.csv', index=False)

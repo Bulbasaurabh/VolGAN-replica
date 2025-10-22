@@ -77,11 +77,13 @@ def run_delta_hedge(options_df, position_option=1, contract_size=100, transactio
         std_error = np.sqrt(variance_error)
         rmshe = np.sqrt(np.nanmean(np.array(hedging_errors_clean)**2))
         
-        # CVaR
-        alpha = 0.05
-        threshold = np.nanpercentile(hedging_errors_clean, alpha * 100)
-        tail_errors = [e for e in hedging_errors_clean if e <= threshold]
-        cvar = np.nanmean(tail_errors) if len(tail_errors) > 0 else np.nan
+        # CVaR at multiple confidence levels
+        cvar_metrics = {}
+        for alpha in [0.01, 0.05, 0.10]:  # 1%, 5%, 10% tails
+            threshold = np.nanpercentile(hedging_errors_clean, alpha * 100)
+            tail_errors = [e for e in hedging_errors_clean if e <= threshold]
+            cvar_metrics[f'cvar_{int(alpha*100)}'] = np.nanmean(tail_errors) if len(tail_errors) > 0 else np.nan
+            cvar_metrics[f'tail_obs_{int(alpha*100)}'] = len(tail_errors)
         
         # P&L and costs
         total_costs = results_df['tx_cost'].sum()
@@ -97,8 +99,7 @@ def run_delta_hedge(options_df, position_option=1, contract_size=100, transactio
             'rmshe': rmshe,
             'min_error': np.nanmin(hedging_errors_clean),
             'max_error': np.nanmax(hedging_errors_clean),
-            'cvar': cvar,
-            'tail_obs': len(tail_errors),
+            **cvar_metrics,  # Unpack CVaR metrics
             'total_pnl': final_pnl,
             'total_costs': total_costs,
             'cost_ratio': final_pnl / total_costs if total_costs > 0 else np.nan
@@ -114,8 +115,8 @@ def run_delta_hedge(options_df, position_option=1, contract_size=100, transactio
 options_full = pl.scan_parquet("../../data/options_dataset.parquet")
 
 # Define your date range and SPX reference
-start_date = datetime(2000, 1, 1)
-end_date = datetime(2000, 12, 31)
+start_date = datetime(2007, 1, 1)
+end_date = datetime(2008, 12, 31)
 
 # Download SPX data
 import yfinance as yf
@@ -218,28 +219,27 @@ for optionid in selected_optionids:
     # Fill missing impl_volatility
     option_data['impl_volatility'] = option_data['impl_volatility'].fillna(method='ffill').fillna(method='bfill')
     
-    # COMMENTED OUT - delta is already calculated
     # Calculate delta 
-    # def black_scholes_delta(row, risk_free_rate=0.01):
-    #     S = row['spx_close']
-    #     K = row['strike_price']
-    #     T = (pd.to_datetime(row['exdate']) - pd.to_datetime(row['date'])).days / 365.0
-    #     sigma = row['impl_volatility']
-    #     cp_flag = row['cp_flag']
+    def black_scholes_delta(row, risk_free_rate=0.01):
+        S = row['spx_close']
+        K = row['strike_price']
+        T = (pd.to_datetime(row['exdate']) - pd.to_datetime(row['date'])).days / 365.0
+        sigma = row['impl_volatility']
+        cp_flag = row['cp_flag']
         
-    #     if not all(np.isfinite([S, K, T, sigma])) or T <= 0 or sigma <= 0:
-    #         return np.nan
+        if not all(np.isfinite([S, K, T, sigma])) or T <= 0 or sigma <= 0:
+            return np.nan
         
-    #     d1 = (np.log(S / K) + (risk_free_rate + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d1 = (np.log(S / K) + (risk_free_rate + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
         
-    #     if cp_flag == 'C':
-    #         return stats.norm.cdf(d1)
-    #     elif cp_flag == 'P':
-    #         return stats.norm.cdf(d1) - 1
-    #     else:
-    #         return np.nan
+        if cp_flag == 'C':
+            return stats.norm.cdf(d1)
+        elif cp_flag == 'P':
+            return stats.norm.cdf(d1) - 1
+        else:
+            return np.nan
     
-    # option_data['delta'] = option_data.apply(black_scholes_delta, axis=1)
+    option_data['delta'] = option_data.apply(black_scholes_delta, axis=1)
     option_data['mid_price'] = (option_data['best_bid'] + option_data['best_offer']) / 2
     
     # Get option details
@@ -280,7 +280,7 @@ for optionid in selected_optionids:
         })
 
 # -------------------------
-# 4. Aggregate and compare results
+# 4. Aggregate and compare results WITH CVaR ANALYSIS
 # -------------------------
 
 print("\n" + "="*80)
@@ -302,10 +302,16 @@ for result in backtest_results:
         'daily_pnl': daily['total_pnl'] if daily else np.nan,
         'daily_costs': daily['total_costs'] if daily else np.nan,
         'daily_rmshe': daily['rmshe'] if daily else np.nan,
+        'daily_cvar_1': daily['cvar_1'] if daily else np.nan,
+        'daily_cvar_5': daily['cvar_5'] if daily else np.nan,
+        'daily_cvar_10': daily['cvar_10'] if daily else np.nan,
         'weekly_obs': weekly['observations'] if weekly else np.nan,
         'weekly_pnl': weekly['total_pnl'] if weekly else np.nan,
         'weekly_costs': weekly['total_costs'] if weekly else np.nan,
         'weekly_rmshe': weekly['rmshe'] if weekly else np.nan,
+        'weekly_cvar_1': weekly['cvar_1'] if weekly else np.nan,
+        'weekly_cvar_5': weekly['cvar_5'] if weekly else np.nan,
+        'weekly_cvar_10': weekly['cvar_10'] if weekly else np.nan,
     }
     
     # Calculate improvements
@@ -314,6 +320,7 @@ for result in backtest_results:
         row['cost_savings_pct'] = (row['cost_savings'] / daily['total_costs']) * 100
         row['pnl_diff'] = weekly['total_pnl'] - daily['total_pnl']
         row['rmshe_diff'] = weekly['rmshe'] - daily['rmshe']
+        row['cvar_5_diff'] = weekly['cvar_5'] - daily['cvar_5']
     
     comparison_data.append(row)
 
@@ -332,20 +339,39 @@ print("\nDaily Hedging Averages:")
 print(f"  Mean P&L: ${comparison_df['daily_pnl'].mean():,.2f}")
 print(f"  Mean Costs: ${comparison_df['daily_costs'].mean():,.2f}")
 print(f"  Mean RMSHE: ${comparison_df['daily_rmshe'].mean():,.2f}")
+print(f"  Mean CVaR (1%): ${comparison_df['daily_cvar_1'].mean():,.2f}")
+print(f"  Mean CVaR (5%): ${comparison_df['daily_cvar_5'].mean():,.2f}")
+print(f"  Mean CVaR (10%): ${comparison_df['daily_cvar_10'].mean():,.2f}")
 
 print("\nWeekly Hedging Averages:")
 print(f"  Mean P&L: ${comparison_df['weekly_pnl'].mean():,.2f}")
 print(f"  Mean Costs: ${comparison_df['weekly_costs'].mean():,.2f}")
 print(f"  Mean RMSHE: ${comparison_df['weekly_rmshe'].mean():,.2f}")
+print(f"  Mean CVaR (1%): ${comparison_df['weekly_cvar_1'].mean():,.2f}")
+print(f"  Mean CVaR (5%): ${comparison_df['weekly_cvar_5'].mean():,.2f}")
+print(f"  Mean CVaR (10%): ${comparison_df['weekly_cvar_10'].mean():,.2f}")
 
 print("\nCost Savings (Daily → Weekly):")
 print(f"  Mean Cost Savings: ${comparison_df['cost_savings'].mean():,.2f}")
 print(f"  Mean Cost Savings %: {comparison_df['cost_savings_pct'].mean():.1f}%")
 print(f"  Mean P&L Difference: ${comparison_df['pnl_diff'].mean():,.2f}")
 print(f"  Mean RMSHE Increase: ${comparison_df['rmshe_diff'].mean():,.2f}")
+print(f"  Mean CVaR (5%) Difference: ${comparison_df['cvar_5_diff'].mean():,.2f}")
+
+print("\n" + "="*80)
+print("CVaR RISK ANALYSIS")
+print("="*80)
+
+print("\nTail Risk Comparison (CVaR at 5% level):")
+print(f"  Daily average worst 5% loss: ${comparison_df['daily_cvar_5'].mean():,.2f}")
+print(f"  Weekly average worst 5% loss: ${comparison_df['weekly_cvar_5'].mean():,.2f}")
+cvar_improvement = comparison_df['daily_cvar_5'].mean() - comparison_df['weekly_cvar_5'].mean()
+print(f"  CVaR improvement (daily is better if negative): ${cvar_improvement:,.2f}")
 
 # Statistical test: Is weekly consistently better/worse?
 pnl_improvements = comparison_df['pnl_diff'].dropna()
+cvar_improvements = comparison_df['cvar_5_diff'].dropna()
+
 if len(pnl_improvements) > 2:
     t_stat, p_value = stats.ttest_1samp(pnl_improvements, 0)
     print(f"\nStatistical test (P&L difference):")
@@ -356,6 +382,17 @@ if len(pnl_improvements) > 2:
         print(f"  Result: Weekly hedging is statistically significantly {direction}")
     else:
         print(f"  Result: No significant difference between daily and weekly")
+
+if len(cvar_improvements) > 2:
+    t_stat_cvar, p_value_cvar = stats.ttest_1samp(cvar_improvements, 0)
+    print(f"\nStatistical test (CVaR 5% difference):")
+    print(f"  t-statistic: {t_stat_cvar:.3f}")
+    print(f"  p-value: {p_value_cvar:.3f}")
+    if p_value_cvar < 0.05:
+        direction = "higher tail risk" if cvar_improvements.mean() < 0 else "lower tail risk"
+        print(f"  Result: Weekly hedging has statistically significantly {direction}")
+    else:
+        print(f"  Result: No significant difference in tail risk")
 
 # Save results
 comparison_df.to_csv('hedging_backtest_results.csv', index=False)

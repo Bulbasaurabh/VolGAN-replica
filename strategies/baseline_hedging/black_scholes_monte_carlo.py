@@ -11,8 +11,8 @@ import scipy.stats as stats
 from datetime import datetime
 
 # SET TRANSACTION COSTS:
-TRANSACTION_COST_HIST = 0
-TRANSACTION_COST_MC = 0
+TRANSACTION_COST_HIST = 0.001
+TRANSACTION_COST_MC = 0.001
 
 
 # %%
@@ -293,8 +293,8 @@ print("="*80)
 options_full = pl.scan_parquet("../../data/options_dataset.parquet")
 
 # Define date range
-start_date = datetime(2000, 1, 1)
-end_date = datetime(2000, 12, 31)
+start_date = datetime(2007, 1, 1)
+end_date = datetime(2008, 12, 31)
 
 # Download SPX data
 print("\nDownloading SPX historical data...")
