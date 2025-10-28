@@ -1,5 +1,8 @@
 *.csv
 *.parquet
+*.png
+*.pt
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -209,3 +212,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 notebooks/VolGAN/
+strategies/baseline_hedging/cumulative_pnl.png
+strategies/baseline_hedging/cumulative_return.png
+strategies/baseline_hedging/drawdown_analysis.png
+*.png
+/strategies/baseline_hedging
